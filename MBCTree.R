@@ -75,9 +75,9 @@ test_multidimensional <- function(test_set, out, clases) {
   exact_match <- rep(TRUE, nrow(test_set))
   classes_accuracy <- numeric()
   for (i in 1:length(clases)) {
-    #print(clases[i])
+    print(clases[i])
     accuracy_i <- mean(match[,i])
-    #print(accuracy_i)
+    print(accuracy_i)
     classes_accuracy <- c(classes_accuracy, accuracy_i)
     exact_match <- exact_match & match[,i]
   }
@@ -312,7 +312,7 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, clases, pre
   }
   # Don't learn noise
   if ((best_accuracy - initial_accuracy) * nrow(validation_set) < 5) {
-    leaf == TRUE 
+    leaf <- TRUE 
   }
   # There is no improvement or enough data
   if (leaf == TRUE) {
