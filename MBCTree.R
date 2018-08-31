@@ -75,9 +75,9 @@ test_multidimensional <- function(test_set, out, clases) {
   exact_match <- rep(TRUE, nrow(test_set))
   classes_accuracy <- numeric()
   for (i in 1:length(clases)) {
-    print(clases[i])
+    #print(clases[i])
     accuracy_i <- mean(match[,i])
-    print(accuracy_i)
+    #print(accuracy_i)
     classes_accuracy <- c(classes_accuracy, accuracy_i)
     exact_match <- exact_match & match[,i]
   }
@@ -259,6 +259,7 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, clases, pre
   if (length(predictoras) == 1) { return(append(MBCTree, list("leaf" = TRUE))) }
   # If no improvement, this MBC will be a leaf in the tree
   best_accuracy <- MBCTree$performance
+  initial_accuracy <- MBCTree$performance
   print(paste0("Accuracy inicial ", best_accuracy))
   leaf <- TRUE
   # Decide which predictora to split, if there is one that improves the accuracy
@@ -298,7 +299,7 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, clases, pre
     accuracy <- performance
     print(paste0("Accuracy ", pred, " ", accuracy))
     # Has it improved? YES:
-    if ((accuracy - best_accuracy) * nrow(validation_set) > 5) { # Don't learn noise
+    if (accuracy > best_accuracy) {
       best_accuracy <- accuracy
       best_MBCs <- MBCs
       best_performance <- performance
@@ -308,6 +309,10 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, clases, pre
       best_validation_set_filtered <- validation_set_filtered
       leaf <- FALSE
     }
+  }
+  # Don't learn noise
+  if ((best_accuracy - initial_accuracy) * nrow(validation_set) < 5) {
+    leaf == TRUE 
   }
   # There is no improvement or enough data
   if (leaf == TRUE) {
@@ -512,9 +517,9 @@ info_MBCTree_aux <- function(MBCTree, depth) {
 ##########################                                                            ##########################
 ################################################################################################################
 
-m <- 11         # Number of features in the MBCs leaf
+m <- 10         # Number of features in the MBCs leaf
 d <- 4          # Number of class variables
-s <- 1          # Depth of the MBCTree
+s <- 2          # Depth of the MBCTree
 parents <- 3    # Maximum number of parents of a node in the class and feature subgraphs
 N <- 100000     # Size of the simulated data set
 
