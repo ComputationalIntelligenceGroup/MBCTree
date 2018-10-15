@@ -3,6 +3,8 @@
 #
 # Authors: Santiago Gil-Begue, Pedro Larrañaga and Concha Bielza
 #
+# Thanks to: Sergio Luengo-Sanchez
+#
 # Notes: This code is part of the publication with name 'Multi-dimensional Bayesian network classifier trees'
 #        published in Proceedings of the 19th International Conference on Intelligent Data Engineering and
 #        Automated Learning, Lecture Notes in Artificial Intelligence, Springer (2018).
@@ -95,18 +97,20 @@ test_multidimensional <- function(test_set, out, classes) {
 ################################################################################################################
 
 ###
-# <MBC> : CPTgrain grain
+# <MBC> : c('bn.fit', 'bn.fit.dnet')
 # <case> : data.frame (with just one row)
 # <classes> and <features> : character (vector)
 #
 # Predicts the class variables <classes> given the values of the features variables <features>
 # of the instance <case> by using the multi-dimensional Bayesian network classifier <MBC>
 #
+# Allows missing data
+#
 # Returns the most probable explanation (MPE) of the class variables
 #   <out> : character (vector)
 ###
 predict_MBC_case <- function(MBC, case, classes, features) {
-  net_ev <- gRain::setEvidence(MBC, evidence = lapply(case[features], function(x) as.character(x)))
+  net_ev <- gRain::setEvidence(as.grain(MBC), evidence=lapply(case[features], function(x) as.character(x)))
   res <- gRain::querygrain(net_ev, nodes=classes, type="joint")
   # MPE (0-1 loss function)
   inds <- arrayInd(which.max(res), dim(res))
@@ -124,7 +128,7 @@ predict_MBC_case <- function(MBC, case, classes, features) {
 # <out> : data.frame (nrow(out) == nrow(test_set))
 ###
 predict_MBC_dataset <- function(MBC, test_set, classes, features) {
-  out <- data.frame(matrix(ncol = length(classes), nrow = nrow(test_set), dimnames = list(NULL, classes)))
+  out <- data.frame(matrix(ncol=length(classes), nrow=nrow(test_set), dimnames=list(NULL, classes)))
   for (i in 1:nrow(test_set)) {
     # <foo> classes may be given in different order than those in <out>
     foo <- predict_MBC_case(MBC, test_set[i,], classes, features)
@@ -134,6 +138,55 @@ predict_MBC_dataset <- function(MBC, test_set, classes, features) {
     }
   }
   return(out)
+}
+
+##
+# The same as predict_MBC_dataset, but...
+#   - Less computational time
+#   + More memory management, in relation to the class space dimension
+#
+# Does not allow missing data
+##
+predict_MBC_dataset_fast <- function(MBC, test_set, classes, features) {
+  options(warn = -1) # Supress warnings
+  out <- test_set[,classes]
+  # Joint class configurations
+  classes_levels <- lapply(classes, function(x) attributes(MBC[[x]]$prob)$dimnames[[1]])
+  names(classes_levels) <- classes
+  classes_joint <- expand.grid(classes_levels)
+  # An instance + joint class configurations
+  matrix_MPE <- cbind(matrix(ncol=length(features), nrow=nrow(classes_joint), dimnames=list(NULL, features)),
+                      classes_joint)
+  # Obtain MPE as argmax p(classes, features), what is the same as argmax p(classes | features)
+  for (i in 1:nrow(test_set)) {
+    matrix_MPE[,features] <- test_set[i, features]
+    index_MPE <- which.max(logLik(MBC, matrix_MPE, by.sample=TRUE))
+    out[i,] <- matrix_MPE[index_MPE, classes]
+  }
+  return(out)
+}
+
+##
+# The same as predict_MBC_dataset_fast, but...
+#   - Less computational time
+#   - Much more memory management
+#
+# Does not allow missing data
+##
+predict_MBC_dataset_veryfast <- function(MBC, test_set, classes, features) {
+  options(warn = -1) # Supress warnings
+  # Joint class configurations
+  classes_levels <- lapply(classes, function(x) attributes(MBC[[x]]$prob)$dimnames[[1]])
+  names(classes_levels) <- classes
+  classes_joint <- expand.grid(classes_levels)
+  I <- nrow(classes_joint)
+  # All instances + joint class configurations
+  big_matrix_MPE <- cbind(test_set[rep(1:nrow(test_set), each = I), features],
+                          classes_joint[rep(seq_len(I), nrow(test_set)), ])
+  # Obtain MPE as argmax p(classes, features), what is the same as argmax p(classes | features)
+  indexes_MPE <- sapply(0:(nrow(test_set)-1),
+                        function(x) which.max(logLik(MBC, big_matrix_MPE[(x*I+1):(x*I+I),], by.sample=TRUE)))
+  return(classes_joint[indexes_MPE,])
 }
 
 ###
@@ -158,7 +211,7 @@ predict_MBCTree_case <- function(MBCTree, case, classes, features) {
 # The same as <predict_MBC_dataset> but using an MBCTree <MBCTree> as the classifier
 ###
 predict_MBCTree_dataset <- function(MBCTree, test_set, classes, features) {
-  out <- data.frame(matrix(ncol = length(classes), nrow = nrow(test_set), dimnames = list(NULL, classes)))
+  out <- data.frame(matrix(ncol=length(classes), nrow=nrow(test_set), dimnames=list(NULL, classes)))
   for (i in 1:nrow(test_set)) {
     # <foo> classes may be given in different order than those in <out>
     foo <- predict_MBCTree_case(MBCTree, test_set[i,], classes, features)
@@ -185,18 +238,17 @@ predict_MBCTree_dataset <- function(MBCTree, test_set, classes, features) {
 # Bayesian method is used for the parameter estimation, Laplace rule is used for regularization.
 #
 # Returns the learned MBC
-#  <MBC> : CPTgrain grain
+#  <MBC> : c('bn.fit', 'bn.fit.dnet')
 ###
 learn_MBC <- function(training_set, classes, features) {
   # Black list of arcs from features to classes
-  bl <- matrix(nrow = length(classes)*length(features), ncol = 2, dimnames = list(NULL, c("from","to")))
-  bl[,"from"] <- rep(features, each = length(classes))
+  bl <- matrix(nrow=length(classes)*length(features), ncol=2, dimnames=list(NULL, c("from","to")))
+  bl[,"from"] <- rep(features, each=length(classes))
   bl[,"to"] <- rep(classes, length(features))
   # Learn MBC structure
-  net <- hc(training_set, blacklist = bl)
+  net <- hc(training_set, blacklist=bl)
   # Fit CPTs
-  fitted <- bn.fit(net, training_set, method = "bayes", iss = 1) # iss = 1 -> Laplace
-  MBC <- as.grain(fitted)
+  MBC <- bn.fit(net, training_set, method="bayes", iss=1) # iss = 1 -> Laplace
   return(MBC)
 }
 
@@ -211,7 +263,7 @@ MBC_possible_arcs <- function(classes, features) {
   size <- length(classes) * (length(classes)-1) + 
           length(features) * (length(features)-1) + 
           length(classes) * length(features)
-  arcs <- matrix(nrow = size, ncol=2, dimnames = list(NULL, c("from", "to")))
+  arcs <- matrix(nrow=size, ncol=2, dimnames=list(NULL, c("from", "to")))
   index = 1
   for (i in 1:length(classes)) {
     # Class subgraph
@@ -252,31 +304,29 @@ MBC_possible_arcs <- function(classes, features) {
 # Bayesian method is used for the parameter estimation, Laplace rule is used for regularization.
 #
 # Returns the learned MBC
-#  <MBC_fit_best> : CPTgrain grain
+#  <MBC_fit_best> : c('bn.fit', 'bn.fit.dnet')
 ###
 learn_MBC_wrapper <- function(training_set, validation_set, classes, features, verbose=FALSE) {
   # Start from a random graph (instead from an empty one)
-  MBC <- random.graph(c(classes, features), num = 1)
-  MBC_fit <- as.grain(bn.fit(MBC, training_set, method = "bayes", iss = 1))
+  MBC <- random.graph(c(classes, features), num=1)
+  MBC_fit <- bn.fit(MBC, training_set, method="bayes", iss=1)
   # Test it
-  out <- predict_MBC_dataset(MBC_fit, validation_set, classes, features)
+  out <- predict_MBC_dataset_veryfast(MBC_fit, validation_set, classes, features)
   performance_best <- test_multidimensional(validation_set, out, classes)$global
   MBC_best <- MBC
   MBC_fit_best <- MBC_fit
   # Add/delete arcs until no one improves
   candidates <- MBC_possible_arcs(classes, features)
-  while (length(candidates) > 0) {
+  candidates <- candidates[sample(nrow(candidates)),] # Shuffle to get them randomly in an efficient way
+  index = nrow(candidates)
+  while (index > 0) {
     if (verbose) {
       plot(MBC_best)
-      print(paste0("> ", length(candidates)/2, " arcs left"))
+      print(paste0("> ", index, " arcs left"))
     }
-    # Random arc
-    if (length(candidates)/2 > 1) {
-      random <- sample(1:(length(candidates)/2), 1) 
-      arc <- candidates[random,]
-    }
-    else { arc <- candidates }
-    print(arc)
+    # Next arc
+    arc <- candidates[index,]; index <- index - 1
+    if (verbose) { print(arc) }
     # Check if the arc is not in the Markov Blanket of any class variable
     if (arc["from"] %in% features) {
       interest <- FALSE
@@ -287,8 +337,6 @@ learn_MBC_wrapper <- function(training_set, validation_set, classes, features, v
         }
       }
       if (!interest) {
-        if (length(candidates)/2 > 1) { candidates <- candidates[-random,] }
-        else { candidates <- list() }
         if (verbose) { print("Arc not in the Markov Blanket") }
         next
       }
@@ -316,14 +364,12 @@ learn_MBC_wrapper <- function(training_set, validation_set, classes, features, v
       # Don't allow cycles
       if (!acyclic(MBC, directed=TRUE)) {
         if (verbose) { print("Adding this arc would involve in a cycle") }
-        if (length(candidates)/2 > 1) { candidates <- candidates[-random,] }
-        else { candidates <- list() }
         next
       }
     }
     # Test new MBC
-    MBC_fit <- as.grain(bn.fit(MBC, training_set, method = "bayes", iss = 1))
-    out <- predict_MBC_dataset(MBC_fit, validation_set, classes, features)
+    MBC_fit <- bn.fit(MBC, training_set, method="bayes", iss=1)
+    out <- predict_MBC_dataset_veryfast(MBC_fit, validation_set, classes, features)
     performance <- test_multidimensional(validation_set, out, classes)$global
     if (verbose) {
       print(paste0("Best accuracy: ", performance_best))
@@ -336,13 +382,12 @@ learn_MBC_wrapper <- function(training_set, validation_set, classes, features, v
       MBC_best <- MBC
       MBC_fit_best <- MBC_fit
       # Explore all arcs
-      candidates <- MBC_possible_arcs(classes, features)
+      candidates <- candidates[sample(nrow(candidates)),]
+      index = nrow(candidates)
     }
     # Improves? No
     else {
       if (verbose) { print("Does not improve") }
-      if (length(candidates)/2 > 1) { candidates <- candidates[-random,] }
-      else { candidates <- list() }
     }
   }
   return(MBC_fit_best)
@@ -360,7 +405,7 @@ learn_MBC_wrapper <- function(training_set, validation_set, classes, features, v
 #
 # Returns the learned MBCTree as a recursive list such that:
 #  + A leaf node is a list with:
-#    - Key <MBC> : CPTgrain grain
+#    - Key <MBC> : c('bn.fit', 'bn.fit.dnet')
 #        MBC associated to the leaf node
 #    - Key <leaf> : logical
 #        A TRUE value meaning this is a leaf node
@@ -384,9 +429,9 @@ learn_MBC_wrapper <- function(training_set, validation_set, classes, features, v
 learn_MBCTree <- function(training_set, validation_set, classes, features, verbose=FALSE) {
   # No tree
   MBC <- learn_MBC(training_set, classes, features)
-  out <- predict_MBC_dataset(MBC, validation_set, classes, features)
+  out <- predict_MBC_dataset_veryfast(MBC, validation_set, classes, features)
   performance <- test_multidimensional(validation_set, out, classes)$global
-  MBCTree <- list("MBC" = MBC, "performance" = performance)
+  MBCTree <- list("MBC"=MBC, "performance"=performance)
   # Try to improve accuraccy splitting features in the tree
   return(learn_MBCTree_aux(MBCTree, training_set, validation_set, classes, features, verbose))
 }
@@ -400,11 +445,11 @@ learn_MBCTree <- function(training_set, validation_set, classes, features, verbo
 ###
 learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, features, verbose) {
   # Don't split if there is only one feature left
-  if (length(features) == 1) { return(append(MBCTree, list("leaf" = TRUE))) }
+  if (length(features) == 1) { return(append(MBCTree, list("leaf"=TRUE))) }
   # If no improvement, this MBC will be a leaf in the tree
-  best_accuracy <- MBCTree$performance
-  initial_accuracy <- MBCTree$performance
-  if (verbose) { print(paste0("Accuracy inicial ", best_accuracy)) }
+  best_performance <- MBCTree$performance
+  initial_performance <- MBCTree$performance
+  if (verbose) { print(paste0("Initial accuracy ", initial_performance)) }
   leaf <- TRUE
   # Decide which feature to split, if there is one that improves the accuracy
   for (i in 1:length(features)) {
@@ -415,7 +460,7 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
     MBCs <- list()
     training_set_filtered <- list()
     validation_set_filtered <- list()
-    labels <- MBCTree$MBC$universe$levels[feature][[1]]
+    labels <- attributes(MBCTree$MBC[[feature]]$prob)$dimnames[[1]]
     for (j in 1:length(labels)) {
       lab <- labels[j]
       # If we don't have enough data to train, don't try this feature
@@ -432,7 +477,7 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
       next
     }
     # Predict test set
-    out <- data.frame(matrix(ncol = length(classes),nrow = nrow(validation_set), dimnames = list(NULL, classes)))
+    out <- data.frame(matrix(ncol=length(classes), nrow=nrow(validation_set), dimnames=list(NULL, classes)))
     for (j in 1:nrow(validation_set)) {
       lab <- validation_set[j,feature]
       foo <- predict_MBC_case(MBCs[[lab]], validation_set[j,], classes, features_rest)
@@ -443,11 +488,9 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
     }
     # Performance
     performance <- test_multidimensional(validation_set, out, classes)$global
-    accuracy <- performance
-    if (verbose) { print(paste0("Accuracy ", feature, " ", accuracy)) }
+    if (verbose) { print(paste0("Accuracy ", feature, " ", performance)) }
     # Has it improved? YES:
-    if (accuracy > best_accuracy) {
-      best_accuracy <- accuracy
+    if (performance > best_performance) {
       best_MBCs <- MBCs
       best_performance <- performance
       best_feature <- feature
@@ -458,31 +501,31 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
     }
   }
   # Don't learn noise
-  if ((best_accuracy - initial_accuracy) * nrow(validation_set) < 5) {
+  if ((best_performance - initial_performance) * nrow(validation_set) < 5) {
     leaf <- TRUE 
   }
   # There is no improvement or enough data
   if (leaf == TRUE) {
-    if (verbose) { print("Arbol cortado: no hay mejora o no suficiente data") }
-    return(append(MBCTree, list("leaf" = TRUE)))
+    if (verbose) { print("This branch is pruned: not enough improvement or data") }
+    return(append(MBCTree, list("leaf"=TRUE)))
   }
   # Else -> Split
-  if (verbose) { print(paste0("El arbol sigue ", best_feature)) }
-  labels <- MBCTree$MBC$universe$levels[best_feature][[1]]
+  if (verbose) { print(paste0("Recursion continues with ", best_feature)) }
+  labels <- attributes(MBCTree$MBC[[best_feature]]$prob)$dimnames[[1]]
   for (i in 1:length(labels)) {
     lab <- labels[i]
     # Performance
     MBC <- best_MBCs[[lab]]
-    out <- predict_MBC_dataset(MBC, best_validation_set_filtered[[lab]], classes, best_features_rest)
+    out <- predict_MBC_dataset_veryfast(MBC, best_validation_set_filtered[[lab]], classes, best_features_rest)
     performance <- test_multidimensional(best_validation_set_filtered[[lab]], out, classes)$global
     # Grow tree
-    MBC_subtree <- list("MBC" = MBC, "performance" = performance)
+    MBC_subtree <- list("MBC"=MBC, "performance"=performance)
     best_MBCs[[lab]] <- learn_MBCTree_aux(MBC_subtree, best_training_set_filtered[[lab]],
                                           best_validation_set_filtered[[lab]], classes,
                                           best_features_rest, verbose)
   }
-  return(append(MBCTree, list("feature" = best_feature, "leaf" = FALSE,
-                              "MBC_split" = best_MBCs, "performance_split" = best_performance)))
+  return(append(MBCTree, list("feature"=best_feature, "leaf"=FALSE,
+                              "MBC_split"=best_MBCs, "performance_split"=best_performance)))
 }
 
 ################################################################################################################
@@ -500,12 +543,12 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
 # Parameters are forced to be extreme, i.e., lower than 0.3 and greater than 0.7
 #
 # Returns the randomly generated MBC
-#   <random_MBC> : CPTgrain grain
+#   <random_MBC> : c('bn.fit', 'bn.fit.dnet')
 ###
 random_MBC <- function(features, classes, parents) {
   ## RANDOM GRAPH
-  feature_graph <- random.graph(features, method = "melancon", max.in.degree = parents)
-  class_graph <- random.graph(classes, method = "melancon", max.in.degree = parents)
+  feature_graph <- random.graph(features, method="melancon", max.in.degree=parents)
+  class_graph <- random.graph(classes, method="melancon", max.in.degree=parents)
   arcs <- rbind(feature_graph$arcs, class_graph$arcs)
   # Add arcs from features to classes with p=50%
   for (i in 1:length(features)) {
@@ -518,7 +561,6 @@ random_MBC <- function(features, classes, parents) {
   variables <- c(features, classes)
   random_graph = empty.graph(variables)
   arcs(random_graph) <- arcs
-  plot(random_graph)
   ## RANDOM PARAMETERS for all BINARY nodes
   cpts <- list()
   for (i in 1:length(variables)) {
@@ -551,8 +593,7 @@ random_MBC <- function(features, classes, parents) {
     }
     cpts[[var]] <- cpt
   }
-  random_graph_fit <- custom.fit(random_graph, dist = cpts)
-  random_MBC <- as.grain(random_graph_fit)
+  random_MBC <- custom.fit(random_graph, dist=cpts)
   return(random_MBC)
 }
 
@@ -567,7 +608,7 @@ random_MBC <- function(features, classes, parents) {
 #
 # Returns the randomly generated MBCTree as a recursive list such that:
 #  + A leaf node is a list with:
-#    - Key <MBC> : CPTgrain grain
+#    - Key <MBC> : c('bn.fit', 'bn.fit.dnet')
 #        MBC associated to the leaf node
 #    - Key <leaf> : logical
 #        A TRUE value meaning this is a leaf node
@@ -584,7 +625,7 @@ random_MBCTree <- function(features, classes, depth, parents) {
   # Leaf
   if (depth == 0) {
     MBC <- random_MBC(features, classes, parents)
-    return(list("MBC" = MBC, "leaf" = TRUE))
+    return(list("MBC"=MBC, "leaf"=TRUE))
   }
   # Split
   else {
@@ -594,7 +635,7 @@ random_MBCTree <- function(features, classes, depth, parents) {
     features_rest <- features[features_rest_v]
     MBC_split <- list("TRUE"  = random_MBCTree(features_rest, classes, depth-1, parents),
                       "FALSE" = random_MBCTree(features_rest, classes, depth-1, parents))
-    return(list("MBC_split" = MBC_split, "leaf" = FALSE, "feature" = features[feature]))
+    return(list("MBC_split"=MBC_split, "leaf"=FALSE, "feature"=features[feature]))
   }
 }
 
@@ -614,7 +655,7 @@ random_MBCTree <- function(features, classes, depth, parents) {
 sample_MBCTree <- function(MBCTree, size) {
   # Leaf
   if (MBCTree$leaf) {
-    return(rbn(as.bn.fit(MBCTree$MBC), n = size))
+    return(rbn(MBCTree$MBC, n=size))
   }
   # Split
   else {
@@ -700,7 +741,7 @@ for (case in 1:executions) {
   # Learn network and parameters
   MBC <- learn_MBC(rbind(training_set, validation_set), classes, features)
   # Predict
-  out <- predict_MBC_dataset(MBC, test_set, classes, features)
+  out <- predict_MBC_dataset_veryfast(MBC, test_set, classes, features)
   # Performance
   print("MBC")
   performance_MBC <- test_multidimensional(test_set, out, classes)
