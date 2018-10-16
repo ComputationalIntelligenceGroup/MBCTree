@@ -49,12 +49,12 @@ test_multilabel <- function(test_set, out, classes) {
   true <- as.data.frame(sapply(test_set[, classes], as.logical)) * 1
   true_mldr <- mldr_from_dataframe(true, labelIndices = 1:length(classes))
   out <- as.data.frame(sapply(out, as.logical)) * 1
-  out_mlresult <- as.mlresult(out, probability = TRUE)
+  out_mlresult <- as.mlresult(out, probability=TRUE)
   # Confusion matrices
   mlconfmat <- multilabel_confusion_matrix(true_mldr, out_mlresult)
   # Multi-label performance evaluation measures. All possible are given
-  measures <- multilabel_evaluate(mlconfmat, measures = c("all"))
-  return(list("mlconfmat" = mlconfmat, "measures" = measures))
+  measures <- multilabel_evaluate(mlconfmat, measures=c("all"))
+  return(list("mlconfmat"=mlconfmat, "measures"=measures))
 }
 
 ###
@@ -78,7 +78,7 @@ test_multidimensional <- function(test_set, out, classes) {
   out <- as.data.frame(sapply(out, as.character), stringsAsFactors=FALSE)
   match <- true == out
   exact_match <- rep(TRUE, nrow(test_set))
-  per_class <- vector("numeric", length = length(classes))
+  per_class <- vector("numeric", length=length(classes))
   for (i in 1:length(classes)) {
     per_class[i] <- mean(match[,i])
     exact_match <- exact_match & match[,i]
@@ -182,7 +182,7 @@ predict_MBC_dataset_veryfast <- function(MBC, test_set, classes, features) {
   I <- nrow(classes_joint)
   # All instances + joint class configurations
   big_matrix_MPE <- cbind(test_set[rep(1:nrow(test_set), each = I), features],
-                          classes_joint[rep(seq_len(I), nrow(test_set)), ])
+                          classes_joint[rep(seq_len(I), nrow(test_set)),])
   # Obtain MPE as argmax p(classes, features), what is the same as argmax p(classes | features)
   indexes_MPE <- sapply(0:(nrow(test_set)-1),
                         function(x) which.max(logLik(MBC, big_matrix_MPE[(x*I+1):(x*I+I),], by.sample=TRUE)))
@@ -253,45 +253,6 @@ learn_MBC <- function(training_set, classes, features) {
 }
 
 ###
-# <classes> and <features> : character (vector)
-#
-# Returns all possible arcs of an MBC with class variables <classes> and feature variables <features>
-#  <arcs> : matrix
-###
-MBC_possible_arcs <- function(classes, features) {
-  # Possible arcs to add
-  size <- length(classes) * (length(classes)-1) + 
-          length(features) * (length(features)-1) + 
-          length(classes) * length(features)
-  arcs <- matrix(nrow=size, ncol=2, dimnames=list(NULL, c("from", "to")))
-  index = 1
-  for (i in 1:length(classes)) {
-    # Class subgraph
-    for (j in 1:length(classes)) {
-      if (i != j) {
-        arcs[index, ] <- c(classes[i], classes[j])
-        index <- index + 1
-      }
-    }
-    # Bridge subgraph
-    for (j in 1:length(features)) {
-      arcs[index, ] <- c(classes[i], features[j])
-      index <- index + 1
-    }
-  }
-  # Feature subgraph
-  for (i in 1:length(features)) {
-    for (j in 1:length(features)) {
-      if (i != j) {
-        arcs[index, ] <- c(features[i], features[j])
-        index <- index + 1
-      }
-    }
-  }
-  return(arcs)
-}
-
-###
 # <training_set> and <validation_set> : data.frame
 # <classes> and <features> : character (vector)
 #
@@ -307,15 +268,15 @@ MBC_possible_arcs <- function(classes, features) {
 #  <MBC_fit_best> : c('bn.fit', 'bn.fit.dnet')
 ###
 learn_MBC_wrapper <- function(training_set, validation_set, classes, features, verbose=FALSE) {
-  # Start from a random graph (instead from an empty one)
-  MBC <- random.graph(c(classes, features), num=1)
-  MBC_fit <- bn.fit(MBC, training_set, method="bayes", iss=1)
+  # Start from a fixed graph (instead from an empty one) in order to avoid early local optima
+  MBC_fit <- learn_MBC(training_set, classes, features)
+  MBC <- bn.net(MBC_fit)
   # Test it
   out <- predict_MBC_dataset_veryfast(MBC_fit, validation_set, classes, features)
   performance_best <- test_multidimensional(validation_set, out, classes)$global
   MBC_best <- MBC
   MBC_fit_best <- MBC_fit
-  # Add/delete arcs until no one improves
+  # Add/delete/reverse arcs until no one improves
   candidates <- MBC_possible_arcs(classes, features)
   candidates <- candidates[sample(nrow(candidates)),] # Shuffle to get them randomly in an efficient way
   index = nrow(candidates)
@@ -352,31 +313,65 @@ learn_MBC_wrapper <- function(training_set, validation_set, classes, features, v
         }
       }
     }
-    # Drop arc if present
+    # Drop or reverse arc if present
+    drop <- arc_present
     if (arc_present) {
-      if (verbose) { print("Dropping") }
+      if (verbose) { print("Dropping or reversing") }
+      # Drop arc
       MBC <- drop.arc(MBC_best, from=arc["from"], to=arc["to"])
+      MBC_fit <- bn.fit(MBC, training_set, method="bayes", iss=1)
+      out <- predict_MBC_dataset_veryfast(MBC_fit, validation_set, classes, features)
+      performance <- test_multidimensional(validation_set, out, classes)$global
+      # Reverse arc. Don't reverse class-to-feature arcs
+      MBC_reverse <- set.arc(MBC, from=arc["to"], to=arc["from"], check.cycles=FALSE)
+      performance_reverse <- 0
+      if (acyclic(MBC_reverse, directed=TRUE) & !(arc["from"] %in% classes & arc["to"] %in% features)) {
+        MBC_fit_reverse <- bn.fit(MBC_reverse, training_set, method="bayes", iss=1)
+        out <- predict_MBC_dataset_veryfast(MBC_fit_reverse, validation_set, classes, features)
+        performance_reverse <- test_multidimensional(validation_set, out, classes)$global
+      }
     }
-    # Add arc if not present
+    # Add arc or its reverse if it is not present
     else {
-      if (verbose) { print("Adding") }
+      if (verbose) { print("Adding arc or its reverse") }
+      # Add the arc
       MBC <- set.arc(MBC_best, from=arc["from"], to=arc["to"], check.cycles=FALSE)
+      performance <- 0
+      # Add the reverse arc
+      MBC_reverse <- set.arc(MBC_best, from=arc["to"], to=arc["from"], check.cycles=FALSE)
+      performance_reverse <- 0
       # Don't allow cycles
-      if (!acyclic(MBC, directed=TRUE)) {
+      if (!acyclic(MBC, directed=TRUE) & !acyclic(MBC_reverse, directed=TRUE)) {
         if (verbose) { print("Adding this arc would involve in a cycle") }
         next
       }
+      # Test MBC with normal arc
+      if (acyclic(MBC, directed=TRUE)) {
+        MBC_fit <- bn.fit(MBC, training_set, method="bayes", iss=1)
+        out <- predict_MBC_dataset_veryfast(MBC_fit, validation_set, classes, features)
+        performance <- test_multidimensional(validation_set, out, classes)$global
+      }
+      # Test MBC with reverse arc
+      if (acyclic(MBC_reverse, directed=TRUE) & !(arc["from"] %in% classes & arc["to"] %in% features)) {
+        MBC_fit_reverse <- bn.fit(MBC_reverse, training_set, method="bayes", iss=1)
+        out <- predict_MBC_dataset_veryfast(MBC_fit_reverse, validation_set, classes, features)
+        performance_reverse <- test_multidimensional(validation_set, out, classes)$global
+      }
     }
-    # Test new MBC
-    MBC_fit <- bn.fit(MBC, training_set, method="bayes", iss=1)
-    out <- predict_MBC_dataset_veryfast(MBC_fit, validation_set, classes, features)
-    performance <- test_multidimensional(validation_set, out, classes)$global
+    # Reverse if it improves
+    if (performance_reverse > performance) {
+      drop <- FALSE
+      if (verbose) { print("Reverting the arc") }
+      performance <- performance_reverse
+      MBC <- MBC_reverse
+      MBC_fit <- MBC_fit_reverse
+    }
     if (verbose) {
       print(paste0("Best accuracy: ", performance_best))
       print(paste0("Current accuracy: ", performance))
     }
     # Improves? Yes
-    if (performance > performance_best) {
+    if ((drop & performance >= performance_best) | (!arc_present & performance > performance_best)) {
       if (verbose) { print("Improves") }
       performance_best <- performance
       MBC_best <- MBC
@@ -507,6 +502,8 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
   # There is no improvement or enough data
   if (leaf == TRUE) {
     if (verbose) { print("This branch is pruned: not enough improvement or data") }
+    # Learn with training+validation sets as the recursion ends
+    MBCTree$MBC <- learn_MBC(rbind(training_set, validation_set), classes, features)
     return(append(MBCTree, list("leaf"=TRUE)))
   }
   # Else -> Split
@@ -538,15 +535,13 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
 # <features> and <classes> : character (vector)
 # <parents> : numeric
 #
-# Generates a random MBC with feature variables <features> and class variables <classes>
-# such that nodes in class and feature subgraphs have at most <parents> parents.
-# Parameters are forced to be extreme, i.e., lower than 0.3 and greater than 0.7
+# Generates a random MBC structure with feature variables <features> and class variables <classes>
+# such that nodes in class and feature subgraphs have at most <parents> parents
 #
-# Returns the randomly generated MBC
-#   <random_MBC> : c('bn.fit', 'bn.fit.dnet')
+# Returns the randomly generated MBC structure
+#   <random_graph> : bn
 ###
-random_MBC <- function(features, classes, parents) {
-  ## RANDOM GRAPH
+random_MBC_structure <- function(features, classes, parents) {
   feature_graph <- random.graph(features, method="melancon", max.in.degree=parents)
   class_graph <- random.graph(classes, method="melancon", max.in.degree=parents)
   arcs <- rbind(feature_graph$arcs, class_graph$arcs)
@@ -559,9 +554,26 @@ random_MBC <- function(features, classes, parents) {
     }
   }
   variables <- c(features, classes)
-  random_graph = empty.graph(variables)
+  random_graph <- empty.graph(variables)
   arcs(random_graph) <- arcs
-  ## RANDOM PARAMETERS for all BINARY nodes
+  return(random_graph)
+}
+
+###
+# <features> and <classes> : character (vector)
+# <parents> : numeric
+#
+# Generates a random MBC with feature variables <features> and class variables <classes>
+# such that nodes in class and feature subgraphs have at most <parents> parents.
+# Parameters are forced to be extreme, i.e., lower than 0.3 and greater than 0.7
+#
+# Returns the randomly generated MBC
+#   <random_MBC> : c('bn.fit', 'bn.fit.dnet')
+###
+random_MBC <- function(features, classes, parents) {
+  # Random structure
+  random_graph <- random_MBC_structure(features, classes, parents)
+  # Random parameters for all BINARY nodes
   cpts <- list()
   for (i in 1:length(variables)) {
     var <- variables[i]
@@ -673,6 +685,45 @@ sample_MBCTree <- function(MBCTree, size) {
 ##########################                           UTILS                            ##########################
 ##########################                                                            ##########################
 ################################################################################################################
+
+###
+# <classes> and <features> : character (vector)
+#
+# Returns all possible arcs of an MBC with class variables <classes> and feature variables <features>
+#  <arcs> : matrix
+###
+MBC_possible_arcs <- function(classes, features) {
+  # Possible arcs to add
+  size <- length(classes) * (length(classes)-1) +   # Class subgraph
+    length(features) * (length(features)-1) + # Feature subgraph
+    length(classes) * length(features)        # Bridge subgraph
+  arcs <- matrix(nrow=size, ncol=2, dimnames=list(NULL, c("from", "to")))
+  index = 1
+  for (i in 1:length(classes)) {
+    # Class subgraph
+    for (j in 1:length(classes)) {
+      if (i != j) {
+        arcs[index, ] <- c(classes[i], classes[j])
+        index <- index + 1
+      }
+    }
+    # Bridge subgraph
+    for (j in 1:length(features)) {
+      arcs[index, ] <- c(classes[i], features[j])
+      index <- index + 1
+    }
+  }
+  # Feature subgraph
+  for (i in 1:length(features)) {
+    for (j in 1:length(features)) {
+      if (i != j) {
+        arcs[index, ] <- c(features[i], features[j])
+        index <- index + 1
+      }
+    }
+  }
+  return(arcs)
+}
 
 ###
 # Prints the internal structure of the MBCTree <MBCTree>
