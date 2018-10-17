@@ -186,8 +186,8 @@ predict_MBC_dataset_veryfast <- function(MBC, test_set, classes, features) {
   big_matrix_MPE <- cbind(test_set[rep(1:nrow(test_set), each = I), features],
                           classes_joint[rep(seq_len(I), nrow(test_set)),])
   # Obtain MPE as argmax p(classes, features), what is the same as argmax p(classes | features)
-  indexes_MPE <- sapply(0:(nrow(test_set)-1),
-                        function(x) which.max(logLik(MBC, big_matrix_MPE[(x*I+1):(x*I+I),], by.sample=TRUE)))
+  likelihood <- logLik(MBC, big_matrix_MPE, by.sample=TRUE)
+  indexes_MPE <- sapply(0:(nrow(test_set)-1), function(x) which.max(likelihood[(x*I+1):(x*I+I)]))
   return(classes_joint[indexes_MPE,])
 }
 
@@ -794,9 +794,9 @@ info_MBCTree_aux <- function(MBCTree, depth) {
 ##########################                                                            ##########################
 ################################################################################################################
 
-m <- 11         # Number of features in the MBCs leaf
+m <- 10         # Number of features in the MBCs leaf
 d <- 4          # Number of class variables
-s <- 1          # Depth of the MBCTree
+s <- 2          # Depth of the MBCTree
 parents <- 3    # Maximum number of parents of a node in the class and feature subgraphs
 N <- 100000     # Size of the simulated data set
 
