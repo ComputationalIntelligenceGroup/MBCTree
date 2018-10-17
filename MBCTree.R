@@ -125,10 +125,12 @@ predict_MBC_case <- function(MBC, case, classes, features) {
 #
 # Predicts the class variables of all the cases in <test_set> data set
 #
+# Allows missing data
+#
 # <out> : data.frame (nrow(out) == nrow(test_set))
 ###
 predict_MBC_dataset <- function(MBC, test_set, classes, features) {
-  out <- data.frame(matrix(ncol=length(classes), nrow=nrow(test_set), dimnames=list(NULL, classes)))
+  out <- test_set[,classes] # To maintain factors format
   for (i in 1:nrow(test_set)) {
     # <foo> classes may be given in different order than those in <out>
     foo <- predict_MBC_case(MBC, test_set[i,], classes, features)
@@ -203,15 +205,14 @@ predict_MBCTree_case <- function(MBCTree, case, classes, features) {
   }
   # Predict the case with the reached MBC leaf
   features_rest <- features[!features %in% features_used]
-  out <- predict_MBC_case(MBCTree_aux$MBC, case, classes, features_rest)
-  return(out)
+  return(predict_MBC_case(MBCTree_aux$MBC, case, classes, features_rest))
 }
 
 ###
 # The same as <predict_MBC_dataset> but using an MBCTree <MBCTree> as the classifier
 ###
 predict_MBCTree_dataset <- function(MBCTree, test_set, classes, features) {
-  out <- data.frame(matrix(ncol=length(classes), nrow=nrow(test_set), dimnames=list(NULL, classes)))
+  out <- test_set[,classes] # To maintain factors format
   for (i in 1:nrow(test_set)) {
     # <foo> classes may be given in different order than those in <out>
     foo <- predict_MBCTree_case(MBCTree, test_set[i,], classes, features)
@@ -221,6 +222,40 @@ predict_MBCTree_dataset <- function(MBCTree, test_set, classes, features) {
     }
   }
   return(out)
+}
+
+###
+# The same as <predict_MBC_dataset_veryfast> but using an MBCTree <MBCTree> as the classifier
+#
+# Returns a list with:
+#   - Key <out> : data.frame
+#       Predicted classes
+#   - Key <true> : data.frame
+#       True classes. Given because the order of the instances is modified from <test_set> because of efficiency
+###
+predict_MBCTree_dataset_veryfast <- function(MBCTree, test_set, classes, features) {
+  if (MBCTree$leaf == TRUE) {
+    true <- test_set[,classes]
+    out <- predict_MBC_dataset_veryfast(MBCTree$MBC, test_set, classes, features)
+  }
+  else {
+    out <- test_set[,classes] # To maintain factors format
+    true <- out
+    features_rest <- features[!features %in% MBCTree$feature]
+    labels <- attributes(MBCTree$MBC[[MBCTree$feature]]$prob)$dimnames[[1]]
+    index <- 1
+    for (i in 1:length(labels)) {
+      lab <- labels[i]
+      test_set_filtered <- test_set[test_set[,MBCTree$feature] == lab, c(classes,features_rest)]
+      index_prev <- index
+      index <- index + nrow(test_set_filtered)
+      result <- predict_MBCTree_dataset_veryfast(MBCTree$MBC_split[[lab]],
+                 test_set_filtered, classes, features_rest)
+      true[index_prev:(index-1),] <- result$true
+      out[index_prev:(index-1),] <- result$out
+    }
+  }
+  return(list("true"=true, "out"=out))
 }
 
 ################################################################################################################
@@ -460,10 +495,10 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
       lab <- labels[j]
       # If we don't have enough data to train, don't try this feature
       training_set_filtered[[lab]] <- training_set[training_set[,feature] == lab, c(classes,features_rest)]
-      if (nrow(training_set_filtered[[lab]]) < 100) { noData <- TRUE; break }
+      if (nrow(training_set_filtered[[lab]]) < 500) { noData <- TRUE; break }
       # If we don't have enough data to test, don't try this feature
       validation_set_filtered[[lab]] <- validation_set[validation_set[,feature] == lab, c(classes,features_rest)]
-      if (nrow(validation_set_filtered[[lab]]) < 50) { noData <- TRUE; break }
+      if (nrow(validation_set_filtered[[lab]]) < 100) { noData <- TRUE; break }
       # Else, try it
       MBCs[[lab]] <- learn_MBC(training_set_filtered[[lab]], classes, features_rest)
     }
@@ -472,7 +507,7 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
       next
     }
     # Predict test set
-    out <- data.frame(matrix(ncol=length(classes), nrow=nrow(validation_set), dimnames=list(NULL, classes)))
+    out <- validation_set[,classes] # To maintain factors format
     true <- out
     index <- 1
     for (j in 1:length(labels)) {
@@ -498,7 +533,7 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
     }
   }
   # Don't learn noise
-  if ((best_performance - initial_performance) * nrow(validation_set) < 5) {
+  if ((best_performance - initial_performance) * nrow(validation_set) < 10) {
     leaf <- TRUE 
   }
   # There is no improvement or enough data
@@ -763,7 +798,7 @@ m <- 11         # Number of features in the MBCs leaf
 d <- 4          # Number of class variables
 s <- 1          # Depth of the MBCTree
 parents <- 3    # Maximum number of parents of a node in the class and feature subgraphs
-N <- 10000      # Size of the simulated data set
+N <- 100000     # Size of the simulated data set
 
 # C1, ..., Cd
 classes = sapply(1:d, function(x) paste("C", x, sep=""))
@@ -808,10 +843,10 @@ for (case in 1:executions) {
   info_MBCTree(MBCTree)
   print("-------")
   # Predict
-  out <- predict_MBCTree_dataset(MBCTree, test_set, classes, features)
+  out <- predict_MBCTree_dataset_veryfast(MBCTree, test_set, classes, features)
   # Performance
   print("MBCTree")
-  performance_MBCTree <- test_multidimensional(test_set, out, classes)
+  performance_MBCTree <- test_multidimensional(out$true, out$out, classes)
   print(performance_MBCTree$global)
   print("========")
 }
