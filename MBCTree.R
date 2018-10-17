@@ -258,7 +258,7 @@ learn_MBC <- function(training_set, classes, features) {
 #
 # Learns an MBC from <training_set> and <validation_set> data sets with class variables <classes>
 # and feature variables <features>. A greedy wrapper strategy is applied, such that it starts from
-# an empty graph, and tries to iteratively add or remove an arc that improves the global accuracy.
+# a fixed graph, and tries to iteratively add/remove/reverse an arc that improves the global accuracy.
 # <training_set> is used for training the current MBC and <validation_set> to check if an accuracy
 # improvement has been achieved with the addition or removal of the arc. It stops when no arc
 # can be added or deleted such that an improvement is achieved.
@@ -450,7 +450,7 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
   for (i in 1:length(features)) {
     noData <- FALSE
     feature <- features[i]
-    features_rest <- features[!features %in% feature]
+    features_rest <- features[-i]
     # Create an MBC for each label
     MBCs <- list()
     training_set_filtered <- list()
@@ -473,16 +473,18 @@ learn_MBCTree_aux <- function(MBCTree, training_set, validation_set, classes, fe
     }
     # Predict test set
     out <- data.frame(matrix(ncol=length(classes), nrow=nrow(validation_set), dimnames=list(NULL, classes)))
-    for (j in 1:nrow(validation_set)) {
-      lab <- validation_set[j,feature]
-      foo <- predict_MBC_case(MBCs[[lab]], validation_set[j,], classes, features_rest)
-      for (k in 1:length(classes)) {
-        clase <- classes[k]
-        out[j,clase] <- foo[clase]
-      }
+    true <- out
+    index <- 1
+    for (j in 1:length(labels)) {
+      lab <- labels[j]
+      index_prev <- index
+      index <- index + nrow(validation_set_filtered[[lab]])
+      true[index_prev:(index-1), ] <- validation_set_filtered[[lab]][,classes]
+      out[index_prev:(index-1), ] <- predict_MBC_dataset_veryfast(MBCs[[lab]],
+                                      validation_set_filtered[[lab]], classes, features_rest)
     }
     # Performance
-    performance <- test_multidimensional(validation_set, out, classes)$global
+    performance <- test_multidimensional(true, out, classes)$global
     if (verbose) { print(paste0("Accuracy ", feature, " ", performance)) }
     # Has it improved? YES:
     if (performance > best_performance) {
@@ -553,8 +555,7 @@ random_MBC_structure <- function(features, classes, parents) {
       }
     }
   }
-  variables <- c(features, classes)
-  random_graph <- empty.graph(variables)
+  random_graph <- empty.graph(c(features, classes))
   arcs(random_graph) <- arcs
   return(random_graph)
 }
@@ -575,6 +576,7 @@ random_MBC <- function(features, classes, parents) {
   random_graph <- random_MBC_structure(features, classes, parents)
   # Random parameters for all BINARY nodes
   cpts <- list()
+  variables <- c(features, classes)
   for (i in 1:length(variables)) {
     var <- variables[i]
     cpt <- double()
